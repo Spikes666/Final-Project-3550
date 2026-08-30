@@ -1,0 +1,79 @@
+"""Fit and compare classification models on a categorical target."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, confusion_matrix
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.tree import DecisionTreeClassifier
+
+from datalens.preprocessing import build_feature_pipeline
+
+MODELS = {
+    "Logistic Regression": LogisticRegression(max_iter=1000),
+    "Decision Tree": DecisionTreeClassifier(random_state=0),
+    "Random Forest": RandomForestClassifier(n_estimators=200, random_state=0),
+}
+
+
+@dataclass
+class ClassificationResult:
+    model_name: str
+    pipeline: Pipeline
+    accuracy: float
+    confusion: np.ndarray
+    labels: list
+    y_test: np.ndarray
+    y_pred: np.ndarray
+
+
+def run_classification_comparison(
+    df: pd.DataFrame,
+    target: str,
+    feature_columns: list[str],
+    test_size: float = 0.2,
+    random_state: int = 0,
+) -> list[ClassificationResult]:
+    data = df.dropna(subset=[target])
+    X = data[feature_columns]
+    y = data[target]
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=test_size, random_state=random_state, stratify=y if y.nunique() > 1 else None
+    )
+    labels = sorted(y.unique().tolist(), key=str)
+
+    results = []
+    for name, estimator in MODELS.items():
+        preprocessor, _, _ = build_feature_pipeline(data, feature_columns)
+        pipeline = Pipeline([("preprocess", preprocessor), ("model", estimator)])
+        pipeline.fit(X_train, y_train)
+        y_pred = pipeline.predict(X_test)
+
+        results.append(
+            ClassificationResult(
+                model_name=name,
+                pipeline=pipeline,
+                accuracy=accuracy_score(y_test, y_pred),
+                confusion=confusion_matrix(y_test, y_pred, labels=labels),
+                labels=labels,
+                y_test=y_test.to_numpy(),
+                y_pred=y_pred,
+            )
+        )
+    return results
+
+
+def feature_importances(result: ClassificationResult) -> pd.Series | None:
+    model = result.pipeline.named_steps["model"]
+    if not hasattr(model, "feature_importances_"):
+        return None
+    preprocessor = result.pipeline.named_steps["preprocess"]
+    names = list(preprocessor.get_feature_names_out())
+    return pd.Series(model.feature_importances_, index=names).sort_values(ascending=False)
